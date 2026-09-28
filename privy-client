@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+#
+# privy-client — одна команда для управления всеми приложениями Privy Stream на сервере.
+#
+# Использование:
+#   privy-client update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+#   privy-client start   [backend|client|admin|all]      запустить
+#   privy-client stop    [backend|client|admin|all]      остановить
+#   privy-client restart [backend|client|admin|all]      перезапустить
+#   privy-client status  [backend|client|admin|all]      коммит и состояние контейнеров
+#   privy-client logs    [backend|client|admin] [сервис…]  журналы (Ctrl+C — выход)
+#
+# Без указания приложения берётся all.
+#
+# backend и client управляются через docker compose. Админка — контейнер privy-admin
+# (создан через docker run), после сборки скрипт его рестартует; если в папке админки
+# когда-нибудь появится docker-compose.yml, она автоматически перейдёт на compose.
+#
+# Пути и имя контейнера настраиваются в /etc/privy-client.conf (см. README.md).
+
+set -euo pipefail
+
+BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy_stream}"
+CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy_stream_client/privy-stream}"
+ADMIN_DIR="${ADMIN_DIR:-/opt/privy-stream/privy_stream_admin}"
+
+# Контейнер админки
+ADMIN_CONTAINER="${ADMIN_CONTAINER:-privy-admin}"
+
+# Необязательно: команда после сборки админки без контейнера (например: systemctl reload nginx)
+ADMIN_AFTER_BUILD_CMD="${ADMIN_AFTER_BUILD_CMD:-}"
+
+if [ -r /etc/privy-client.conf ]; then
+  # shellcheck disable=SC1091
+  . /etc/privy-client.conf
+fi
+
+# docker compose (v2, плагин) или старый docker-compose
+if docker compose version >/dev/null 2>&1; then
+  DC=(docker compose)
+else
+  DC=(docker-compose)
+fi
+
+C_G=$'\e[32m' C_Y=$'\e[33m' C_R=$'\e[31m' C_B=$'\e[1m' C_0=$'\e[0m'
+say()  { printf '%s==> %s%s\n' "$C_G" "$*" "$C_0"; }
+warn() { printf '%s!! %s%s\n' "$C_Y" "$*" "$C_0" >&2; }
+die()  { printf '%sОшибка: %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
+
+dir_of() {
+  case "$1" in
+    backend) printf '%s' "$BACKEND_DIR" ;;
+    client)  printf '%s' "$CLIENT_DIR" ;;
+    admin)   printf '%s' "$ADMIN_DIR" ;;
+  esac
+}
+
+has_compose() {
+  [ -f "$1/docker-compose.yml" ] || [ -f "$1/docker-compose.yaml" ] || [ -f "$1/compose.yaml" ]
+}
+
+compose() { # compose <каталог приложения> [аргументы docker compose…]
+  local dir="$1"; shift
+  ( cd "$dir" && "${DC[@]}" "$@" )
+}
+
+# Контейнер админки существует (в любом состоянии)?
+admin_container_exists() {
+  [ -n "$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -x "$ADMIN_CONTAINER")" ]
+}
+
+# Под sudo PATH урезан, и npm из nvm не виден — ищем его в домашней папке
+# вызвавшего пользователя и у root.
+find_npm() {
+  command -v npm >/dev/null 2>&1 && return 0
+  local base cand
+  for base in ${SUDO_USER:+/home/$SUDO_USER} "$HOME"; do
+    cand="$(ls -d "$base"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+    if [ -n "$cand" ] && [ -x "$cand/npm" ]; then
+      export PATH="$cand:$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
+git_pull() {
+  say "$1: git pull"
+  git -C "$1" pull --ff-only || return 1
+  git -C "$1" log -1 --format='    сейчас на: %h %s (%ar)' || return 1
+}
+
+# --- действия; аргументы у всех: <каталог> <имя приложения> [хвост…]
+# Вызываются из `if ! run_…`, поэтому set -e внутри них не работает:
+# падающие команды ловим явно через || return 1.
+
+run_update() {
+  local dir="$1" name="$2"
+  git_pull "$dir" || return 1
+  if has_compose "$dir"; then
+    say "$name: docker compose up -d --build"
+    compose "$dir" up -d --build || return 1
+    docker image prune -f >/dev/null 2>&1 || true # мусор от предыдущих сборок
+    return 0
+  fi
+  say "$name: npm ci && npm run build"
+  if ! find_npm; then
+    warn "$name: npm не найден — под sudo не видно ноду из nvm."
+    warn "Варианты: поставить node системно (apt install nodejs npm) или добавить"
+    warn "в /etc/privy-client.conf строку: PATH=/home/<user>/.nvm/versions/node/vX/bin:\$PATH"
+    return 1
+  fi
+  ( cd "$dir" && npm ci && npm run build ) || return 1
+  if [ "$name" = admin ] && admin_container_exists; then
+    say "$name: docker restart $ADMIN_CONTAINER"
+    docker restart "$ADMIN_CONTAINER" >/dev/null
+  elif [ -n "$ADMIN_AFTER_BUILD_CMD" ]; then
+    say "$name: $ADMIN_AFTER_BUILD_CMD"
+    bash -lc "$ADMIN_AFTER_BUILD_CMD"
+  fi
+}
+
+run_start() {
+  local dir="$1" name="$2"
+  if has_compose "$dir"; then
+    say "$name: docker compose up -d"
+    compose "$dir" up -d
+  elif [ "$name" = admin ] && admin_container_exists; then
+    say "$name: docker start $ADMIN_CONTAINER"
+    docker start "$ADMIN_CONTAINER"
+  else
+    say "$name — статика без контейнера, её отдаёт веб-сервер; запускать нечего"
+  fi
+}
+
+run_stop() {
+  local dir="$1" name="$2"
+  if has_compose "$dir"; then
+    say "$name: docker compose stop"
+    compose "$dir" stop
+  elif [ "$name" = admin ] && admin_container_exists; then
+    say "$name: docker stop $ADMIN_CONTAINER"
+    docker stop "$ADMIN_CONTAINER"
+  else
+    say "$name — статика без контейнера, её отдаёт веб-сервер; останавливать нечего"
+  fi
+}
+
+run_restart() {
+  local dir="$1" name="$2"
+  if has_compose "$dir"; then
+    say "$name: docker compose restart"
+    compose "$dir" restart
+  elif [ "$name" = admin ] && admin_container_exists; then
+    say "$name: docker restart $ADMIN_CONTAINER"
+    docker restart "$ADMIN_CONTAINER" >/dev/null
+  else
+    say "$name — статика без контейнера, её отдаёт веб-сервер; перезапускать нечего"
+  fi
+}
+
+run_logs() {
+  local dir="$1" name="$2"; shift 2
+  if has_compose "$dir"; then
+    say "$name: журналы (Ctrl+C — выход)"
+    if [ "$#" -gt 0 ]; then
+      compose "$dir" logs --tail=100 -f "$@"
+    else
+      compose "$dir" logs --tail=100 -f
+    fi
+  elif [ "$name" = admin ] && admin_container_exists; then
+    say "$name: журналы контейнера $ADMIN_CONTAINER (Ctrl+C — выход)"
+    docker logs --tail=100 -f "$ADMIN_CONTAINER"
+  else
+    warn "$name — статика без контейнера, своих журналов нет (смотрите nginx/Caddy)"
+  fi
+}
+
+run_status() {
+  local dir="$1" name="$2" built
+  printf '%s%s%s  %s\n' "$C_B" "$name" "$C_0" "$dir"
+  git -C "$dir" log -1 --format='  коммит: %h %s (%ar)' 2>/dev/null || warn "  git-истории нет"
+  if has_compose "$dir"; then
+    compose "$dir" ps -a
+  elif [ "$name" = admin ] && admin_container_exists; then
+    docker ps -a --filter "name=$ADMIN_CONTAINER" --format '  контейнер {{.Names}}: {{.Status}}'
+  elif [ -f "$dir/dist/index.html" ]; then
+    built="$(stat -c '%y' "$dir/dist/index.html" 2>/dev/null | cut -d'.' -f1 || true)"
+    if [ -n "$built" ]; then
+      printf '  статика собрана: %s\n' "$built"
+    fi
+  else
+    warn "  ни docker-compose.yml, ни контейнера, ни dist/ — неясно, как это деплоится"
+  fi
+}
+
+# --- разбор аргументов
+
+usage() {
+  cat <<'EOF'
+privy-client — управление приложениями Privy Stream одной командой
+
+  privy-client update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+  privy-client start   [backend|client|admin|all]      запустить
+  privy-client stop    [backend|client|admin|all]      остановить
+  privy-client restart [backend|client|admin|all]      перезапустить
+  privy-client status  [backend|client|admin|all]      коммит и состояние контейнеров
+  privy-client logs    [backend|client|admin] [сервис…]  журналы, Ctrl+C — выход
+
+Без указания приложения берётся all. Пути и имя контейнера админки — в /etc/privy-client.conf.
+EOF
+}
+
+ACTION="${1:-help}"
+
+case "$ACTION" in
+  h | help | -h | --help) usage; exit 0 ;;
+  update | start | stop | restart | status | logs) ;;
+  *) usage >&2; die "неизвестная команда: $ACTION" ;;
+esac
+
+TARGET="${2:-all}"
+case "$TARGET" in
+  all) TARGETS="backend client admin" ;;
+  backend | client | admin) TARGETS="$TARGET" ;;
+  *) die "неизвестное приложение: $TARGET (доступны: backend, client, admin, all)" ;;
+esac
+
+extra=()
+if [ "$#" -ge 3 ]; then extra=("${@:3}"); fi
+
+fail=0
+for app in $TARGETS; do
+  dir="$(dir_of "$app")"
+  echo
+  if [ ! -d "$dir" ]; then
+    warn "[$app] папки $dir нет — поправьте путь в /etc/privy-client.conf"
+    fail=1
+    continue
+  fi
+  rc=0
+  "run_$ACTION" "$dir" "$app" ${extra[@]+"${extra[@]}"} || rc=$?
+  if [ "$rc" -eq 130 ]; then
+    rc=0 # Ctrl+C в logs — штатный выход
+  fi
+  if [ "$rc" -ne 0 ]; then
+    warn "[$app] ошибка при выполнении: $ACTION"
+    fail=1
+  fi
+done
+
+echo
+if [ "$fail" -ne 0 ]; then
+  warn "готово, но были ошибки — см. выше"
+  exit 1
+fi
+say "готово"
