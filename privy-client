@@ -23,11 +23,11 @@
 set -euo pipefail
 
 # Версия; build-deb.sh читает её отсюда же для .deb-пакета
-PC_VERSION=1.0.0
+PC_VERSION=1.1.0
 
-BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy_stream}"
-CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy_stream_client/privy-stream}"
-ADMIN_DIR="${ADMIN_DIR:-/opt/privy-stream/privy_stream_admin}"
+BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy-server}"
+CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy-stream}"
+ADMIN_DIR="${ADMIN_DIR:-/opt/privy-stream/privy-admin}"
 
 # Контейнер админки
 ADMIN_CONTAINER="${ADMIN_CONTAINER:-privy-admin}"
@@ -37,9 +37,9 @@ ADMIN_AFTER_BUILD_CMD="${ADMIN_AFTER_BUILD_CMD:-}"
 
 # Откуда install клонирует приложения
 GITHUB_ORG="${GITHUB_ORG:-teper-ya-pomenyal}"
-BACKEND_REPO="${BACKEND_REPO:-https://github.com/$GITHUB_ORG/privy_stream.git}"
-CLIENT_REPO="${CLIENT_REPO:-https://github.com/$GITHUB_ORG/privy_stream_client.git}"
-ADMIN_REPO="${ADMIN_REPO:-https://github.com/$GITHUB_ORG/privy_stream_admin.git}"
+BACKEND_REPO="${BACKEND_REPO:-https://github.com/$GITHUB_ORG/privy-server.git}"
+CLIENT_REPO="${CLIENT_REPO:-https://github.com/$GITHUB_ORG/privy-stream.git}"
+ADMIN_REPO="${ADMIN_REPO:-https://github.com/$GITHUB_ORG/privy-admin.git}"
 
 # Порт контейнера админки на хосте (контейнер создаётся командой install admin)
 ADMIN_PORT="${ADMIN_PORT:-8082}"
@@ -64,8 +64,17 @@ die()  { printf '%sОшибка: %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 dir_of() {
   case "$1" in
     backend) printf '%s' "$BACKEND_DIR" ;;
-    client)  printf '%s' "$CLIENT_DIR" ;;
+    client)  printf '%s/privy-stream' "$CLIENT_DIR" ;; # приложение — во вложенной папке клона
     admin)   printf '%s' "$ADMIN_DIR" ;;
+  esac
+}
+
+# Куда git clone: репозиторий клиента ставится целиком в CLIENT_DIR,
+# его рабочая папка (docker-compose.yml) — внутри, в privy-stream/
+clone_dir_of() {
+  case "$1" in
+    client) printf '%s' "$CLIENT_DIR" ;;
+    *) dir_of "$1" ;;
   esac
 }
 
@@ -236,14 +245,15 @@ is_installed() {
 }
 
 run_install() {
-  local dir="$1" name="$2"
+  local dir="$1" name="$2" clone
   if is_installed "$dir"; then
     say "$name уже установлен в $dir — обновление: privy-client update $name"
     return 0
   fi
-  mkdir -p "$(dirname "$dir")"
-  say "$name: git clone $(repo_of "$name")"
-  git clone "$(repo_of "$name")" "$dir" || return 1
+  clone="$(clone_dir_of "$name")"
+  mkdir -p "$(dirname "$clone")"
+  say "$name: git clone $(repo_of "$name") → $clone"
+  git clone "$(repo_of "$name")" "$clone" || return 1
   case "$name" in
     backend) install_backend_extras "$dir" ;;
     client)  install_client_extras "$dir" ;;
@@ -276,13 +286,13 @@ install_backend_extras() {
 }
 
 install_client_extras() {
-  local dir="$1" web="$dir/privy-stream" fresh=0
-  if [ ! -f "$web/.env" ]; then
+  local dir="$1" fresh=0
+  if [ ! -f "$dir/.env" ]; then
     fresh=1
     say "client: создаю .env из .env.example"
-    cp "$web/.env.example" "$web/.env"
+    cp "$dir/.env.example" "$dir/.env"
     if [ -n "${PRIVY_NODE_URL:-}" ]; then
-      sed -i.bak "s|^PRIVY_NODE_URL=.*|PRIVY_NODE_URL=$PRIVY_NODE_URL|" "$web/.env" && rm -f "$web/.env.bak"
+      sed -i.bak "s|^PRIVY_NODE_URL=.*|PRIVY_NODE_URL=$PRIVY_NODE_URL|" "$dir/.env" && rm -f "$dir/.env.bak"
     fi
   fi
   # если .env сгенерирован только что и узел не передан — останавливаемся до compose:
@@ -293,9 +303,9 @@ install_client_extras() {
     return 1
   fi
   say "client: docker compose up -d --build"
-  compose "$web" up -d --build || return 1
+  compose "$dir" up -d --build || return 1
   docker image prune -f >/dev/null 2>&1 || true
-  say "client: веб-версия слушает :8081 (или PRIVY_WEB_PORT из $web/.env)"
+  say "client: веб-версия слушает :8081 (или PRIVY_WEB_PORT из $dir/.env)"
 }
 
 install_admin_extras() {

@@ -74,7 +74,7 @@ sudo privy-client install all
 - **backend** — клонирует репозиторий, из `.env.example` создаёт `.env`, генерируя
   случайные `POSTGRES_PASSWORD` и `USER_CACHE_PASSWORD`, и поднимает `docker compose`
   (миграции прогоняются сами — это сервисы compose). Домен веб-клиента потом
-  впишите в `CORS_ALLOWED_ORIGINS` в `/opt/privy-stream/privy_stream/.env`.
+  впишите в `CORS_ALLOWED_ORIGINS` в `/opt/privy-stream/privy-server/.env`.
 - **client** — клонирует репозиторий, создаёт `.env` веб-версии с переданным
   `PRIVY_NODE_URL` (без него установка останавливается с подсказкой — веб-версии
   нужно знать адрес узла), поднимает `docker compose`.
@@ -93,9 +93,9 @@ sudo privy-client install all
 
 ```sh
 sudo mkdir -p /opt/privy-stream && cd /opt/privy-stream
-sudo git clone https://github.com/teper-ya-pomenyal/privy_stream.git
-sudo git clone https://github.com/teper-ya-pomenyal/privy_stream_client.git
-sudo git clone https://github.com/teper-ya-pomenyal/privy_stream_admin.git
+sudo git clone https://github.com/teper-ya-pomenyal/privy-server.git
+sudo git clone https://github.com/teper-ya-pomenyal/privy-stream.git
+sudo git clone https://github.com/teper-ya-pomenyal/privy-admin.git
 ```
 
 ## Удаление
@@ -106,34 +106,35 @@ sudo privy-client uninstall backend   # или client | admin | all
 
 `uninstall` гасит и удаляет контейнеры приложения и удаляет его каталог
 из `/opt/privy-stream`. Данные backend (postgres, треки) при этом **остаются**
-в томах `privy_stream_*` — команда их полного удаления печатается после выполнения.
+в томах `privy-server_*` — команда их полного удаления печатается после выполнения.
 Повторный `install` ставит приложение заново с нуля.
 
 ## Пути по умолчанию
 
 | Приложение | Каталог |
 |---|---|
-| `backend` | `/opt/privy-stream/privy_stream` |
-| `client` | `/opt/privy-stream/privy_stream_client/privy-stream` |
-| `admin` | `/opt/privy-stream/privy_stream_admin` |
+| `backend` | `/opt/privy-stream/privy-server` |
+| `client` | `/opt/privy-stream/privy-stream` |
+| `admin` | `/opt/privy-stream/privy-admin` |
 
-У клиента путь глубже, потому что `docker-compose.yml` лежит во вложенной папке
-`privy-stream` репозитория клиента.
+`CLIENT_DIR` у клиента — это корень клона репозитория: само приложение с
+`docker-compose.yml` лежит внутри него, во вложенной папке `privy-stream`
+(скрипт находит её сам).
 
 Если разложили иначе — создайте `/etc/privy-client.conf`, он перекрывает значения
 из скрипта, и править сам скрипт не придётся:
 
 ```sh
 sudo tee /etc/privy-client.conf >/dev/null <<'EOF'
-BACKEND_DIR=/opt/privy-stream/privy_stream
-CLIENT_DIR=/opt/privy-stream/privy_stream_client/privy-stream
-ADMIN_DIR=/opt/privy-stream/privy_stream_admin
+BACKEND_DIR=/opt/privy-stream/privy-server
+CLIENT_DIR=/opt/privy-stream/privy-stream
+ADMIN_DIR=/opt/privy-stream/privy-admin
 ADMIN_CONTAINER=privy-admin
 ADMIN_PORT=8082
 
 # откуда install клонирует репозитории (для форка достаточно GITHUB_ORG)
 #GITHUB_ORG=teper-ya-pomenyal
-#BACKEND_REPO=https://github.com/teper-ya-pomenyal/privy_stream.git
+#BACKEND_REPO=https://github.com/teper-ya-pomenyal/privy-server.git
 
 # необязательно: команда после сборки админки без контейнера
 #ADMIN_AFTER_BUILD_CMD=systemctl reload nginx
@@ -181,9 +182,9 @@ sudo ~/privy-client/install.sh   # install.sh идемпотентен, прос
 - **«dubious ownership in repository»** — репозитории принадлежат одному пользователю,
   а скрипт запущен через sudo от root. Лечится один раз на каждый репозиторий:
   ```sh
-  sudo git config --global --add safe.directory /opt/privy-stream/privy_stream
-  sudo git config --global --add safe.directory /opt/privy-stream/privy_stream_client/privy-stream
-  sudo git config --global --add safe.directory /opt/privy-stream/privy_stream_admin
+  sudo git config --global --add safe.directory /opt/privy-stream/privy-server
+  sudo git config --global --add safe.directory /opt/privy-stream/privy-stream
+  sudo git config --global --add safe.directory /opt/privy-stream/privy-admin
   ```
 - **«insufficient permission for adding an object to repository database»** — репозиторий
   обновлялся попеременно то с sudo, то без: часть `.git` принадлежит root, часть вам.
