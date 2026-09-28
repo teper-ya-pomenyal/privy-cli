@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write # релизу нужно право создавать release и заливать файлы
+
 jobs:
   build:
     runs-on: ubuntu-24.04
