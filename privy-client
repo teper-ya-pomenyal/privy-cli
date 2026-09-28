@@ -22,6 +22,9 @@
 
 set -euo pipefail
 
+# Версия; build-deb.sh читает её отсюда же для .deb-пакета
+PC_VERSION=1.0.0
+
 BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy_stream}"
 CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy_stream_client/privy-stream}"
 ADMIN_DIR="${ADMIN_DIR:-/opt/privy-stream/privy_stream_admin}"
@@ -363,6 +366,7 @@ privy-client — управление приложениями Privy Stream од
   privy-client restart [backend|client|admin|all]      перезапустить
   privy-client status  [backend|client|admin|all]      коммит и состояние контейнеров
   privy-client logs    [backend|client|admin] [сервис…]  журналы, Ctrl+C — выход
+  privy-client version                                 показать версию
 
 Без указания приложения берётся all. Пути и имя контейнера админки — в /etc/privy-client.conf.
 EOF
@@ -372,6 +376,7 @@ ACTION="${1:-help}"
 
 case "$ACTION" in
   h | help | -h | --help) usage; exit 0 ;;
+  v | version | --version) printf 'privy-client %s\n' "$PC_VERSION"; exit 0 ;;
   update | install | uninstall | start | stop | restart | status | logs) ;;
   *) usage >&2; die "неизвестная команда: $ACTION" ;;
 esac

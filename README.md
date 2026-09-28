@@ -25,6 +25,26 @@ sudo privy-client logs backend      # журналы docker compose (можно 
 
 ## Установка
 
+### Через .deb (apt)
+
+```sh
+git clone https://github.com/teper-ya-pomenyal/privy-client.git
+cd privy-client
+./build-deb.sh                              # нужен только dpkg-deb, он есть в любой Ubuntu
+sudo apt install ./privy-client_*_all.deb
+```
+
+Пакет кладёт команду в `/usr/bin/privy-client`; обновление — собрать новую версию
+и повторить `apt install`. Если раньше ставили через `install.sh`, один раз удалите
+старую копию, чтобы она не затеняла пакетную: `sudo rm /usr/local/bin/privy-client`
+(PATH ищет в `/usr/local/bin` раньше, чем в `/usr/bin`).
+
+GitHub Actions (`.github/workflows/deb.yml`) собирает `.deb` на каждый тег `v*`
+и прикладывает его к release — готовые пакеты можно скачивать со страницы Releases.
+Если захочется настоящее `sudo apt install privy-client` без файла — тот же пакет
+загружается в PPA на Launchpad (`ppa:вы/privy`), после чего работает
+`sudo add-apt-repository ppa:вы/privy && sudo apt install privy-client`.
+
 ### Автоматом, силами самого cli
 
 Сначала сам cli, если ещё не стоит:
@@ -148,6 +168,9 @@ EOF
 git -C ~/privy-client pull
 sudo ~/privy-client/install.sh   # install.sh идемпотентен, просто перезапишите бинарник
 ```
+
+Если ставили `.deb`-пакетом — обновляйте пакетом: скачайте/соберите новый `.deb`
+и `sudo apt install ./privy-client_*_all.deb` поверх старого.
 
 ## Если что-то не так
 
