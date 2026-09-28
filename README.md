@@ -1,17 +1,17 @@
-# privy-client — управление стеком Privy Stream одной командой
+# privy-cli — управление стеком Privy Stream одной командой
 
 Bash-скрипт, который после установки на сервер позволяет из любой папки делать:
 
 ```sh
-sudo privy-client install           # поставить всё с GitHub: клон + .env + сборка + запуск
-sudo privy-client update            # обновить всё: git pull + пересборка + перезапуск
-sudo privy-client update backend    # только одно приложение (backend | client | admin | all)
-sudo privy-client uninstall admin   # снять приложение
-sudo privy-client start             # запустить всё
-sudo privy-client stop              # остановить всё
-sudo privy-client restart           # перезапустить всё
-sudo privy-client status            # на каких коммитах и что крутится
-sudo privy-client logs backend      # журналы docker compose (можно с сервисом: logs backend gateway)
+sudo privy-cli install           # поставить всё с GitHub: клон + .env + сборка + запуск
+sudo privy-cli update            # обновить всё: git pull + пересборка + перезапуск
+sudo privy-cli update backend    # только одно приложение (backend | client | admin | all)
+sudo privy-cli uninstall admin   # снять приложение
+sudo privy-cli start             # запустить всё
+sudo privy-cli stop              # остановить всё
+sudo privy-cli restart           # перезапустить всё
+sudo privy-cli status            # на каких коммитах и что крутится
+sudo privy-cli logs backend      # журналы docker compose (можно с сервисом: logs backend gateway)
 ```
 
 Без указания приложения команда применяется ко всем трём.
@@ -28,45 +28,45 @@ sudo privy-client logs backend      # журналы docker compose (можно 
 ### Через .deb (apt)
 
 ```sh
-git clone https://github.com/teper-ya-pomenyal/privy-client.git
-cd privy-client
+git clone https://github.com/teper-ya-pomenyal/privy-cli.git
+cd privy-cli
 ./build-deb.sh                              # нужен только dpkg-deb, он есть в любой Ubuntu
-sudo apt install ./privy-client_*_all.deb
+sudo apt install ./privy-cli_*_all.deb
 ```
 
-Пакет кладёт команду в `/usr/bin/privy-client`; обновление — собрать новую версию
+Пакет кладёт команду в `/usr/bin/privy-cli`; обновление — собрать новую версию
 и повторить `apt install`. Если раньше ставили через `install.sh`, один раз удалите
-старую копию, чтобы она не затеняла пакетную: `sudo rm /usr/local/bin/privy-client`
+старую копию, чтобы она не затеняла пакетную: `sudo rm /usr/local/bin/privy-cli`
 (PATH ищет в `/usr/local/bin` раньше, чем в `/usr/bin`).
 
 GitHub Actions (`.github/workflows/deb.yml`) собирает `.deb` на каждый тег `v*`
 и прикладывает его к release — готовые пакеты можно скачивать со страницы Releases.
-Если захочется настоящее `sudo apt install privy-client` без файла — тот же пакет
+Если захочется настоящее `sudo apt install privy-cli` без файла — тот же пакет
 загружается в PPA на Launchpad (`ppa:вы/privy`), после чего работает
-`sudo add-apt-repository ppa:вы/privy && sudo apt install privy-client`.
+`sudo add-apt-repository ppa:вы/privy && sudo apt install privy-cli`.
 
 ### Автоматом, силами самого cli
 
 Сначала сам cli, если ещё не стоит:
 
 ```sh
-git clone https://github.com/teper-ya-pomenyal/privy-client.git
-sudo ./privy-client/install.sh
+git clone https://github.com/teper-ya-pomenyal/privy-cli.git
+sudo ./privy-cli/install.sh
 ```
 
 Затем приложения — каждое клонируется с GitHub в `/opt/privy-stream`,
 собирается и запускается:
 
 ```sh
-sudo privy-client install backend   # клон + .env со случайными паролями + compose up, gateway на :8080
-sudo privy-client install admin     # клон + npm build + контейнер privy-admin на :8082
-sudo PRIVY_NODE_URL=https://адрес-узла privy-client install client   # веб-версия на :8081
+sudo privy-cli install backend   # клон + .env со случайными паролями + compose up, gateway на :8080
+sudo privy-cli install admin     # клон + npm build + контейнер privy-admin на :8082
+sudo PRIVY_NODE_URL=https://адрес-узла privy-cli install client   # веб-версия на :8081
 ```
 
 или всё сразу (`install all`) — клиент остановится с подсказкой, если адрес узла не передан:
 
 ```sh
-sudo privy-client install all
+sudo privy-cli install all
 ```
 
 Что делает `install` для каждого приложения:
@@ -101,7 +101,7 @@ sudo git clone https://github.com/teper-ya-pomenyal/privy-admin.git
 ## Удаление
 
 ```sh
-sudo privy-client uninstall backend   # или client | admin | all
+sudo privy-cli uninstall backend   # или client | admin | all
 ```
 
 `uninstall` гасит и удаляет контейнеры приложения и удаляет его каталог
@@ -121,11 +121,11 @@ sudo privy-client uninstall backend   # или client | admin | all
 `docker-compose.yml` лежит внутри него, во вложенной папке `privy-stream`
 (скрипт находит её сам).
 
-Если разложили иначе — создайте `/etc/privy-client.conf`, он перекрывает значения
+Если разложили иначе — создайте `/etc/privy-cli.conf`, он перекрывает значения
 из скрипта, и править сам скрипт не придётся:
 
 ```sh
-sudo tee /etc/privy-client.conf >/dev/null <<'EOF'
+sudo tee /etc/privy-cli.conf >/dev/null <<'EOF'
 BACKEND_DIR=/opt/privy-stream/privy-server
 CLIENT_DIR=/opt/privy-stream/privy-stream
 ADMIN_DIR=/opt/privy-stream/privy-admin
@@ -166,19 +166,19 @@ EOF
 ## Обновление самого cli
 
 ```sh
-git -C ~/privy-client pull
-sudo ~/privy-client/install.sh   # install.sh идемпотентен, просто перезапишите бинарник
+git -C ~/privy-cli pull
+sudo ~/privy-cli/install.sh   # install.sh идемпотентен, просто перезапишите бинарник
 ```
 
 Если ставили `.deb`-пакетом — обновляйте пакетом: скачайте/соберите новый `.deb`
-и `sudo apt install ./privy-client_*_all.deb` поверх старого.
+и `sudo apt install ./privy-cli_*_all.deb` поверх старого.
 
 ## Если что-то не так
 
 - **«npm: command not found» под sudo** — node поставлен через nvm, а у root под sudo
   урезанный PATH. Скрипт сам ищет npm в `~/.nvm` пользователя, который вызвал sudo.
   Если не находит — поставьте node системно (`apt install nodejs npm`) или добавьте
-  строку `PATH=…` в `/etc/privy-client.conf` (пример выше).
+  строку `PATH=…` в `/etc/privy-cli.conf` (пример выше).
 - **«dubious ownership in repository»** — репозитории принадлежат одному пользователю,
   а скрипт запущен через sudo от root. Лечится один раз на каждый репозиторий:
   ```sh
@@ -188,7 +188,7 @@ sudo ~/privy-client/install.sh   # install.sh идемпотентен, прос
   ```
 - **«insufficient permission for adding an object to repository database»** — репозиторий
   обновлялся попеременно то с sudo, то без: часть `.git` принадлежит root, часть вам.
-  Выберите один режим: либо всегда запускайте privy-client с sudo, либо один раз
+  Выберите один режим: либо всегда запускайте privy-cli с sudo, либо один раз
   верните каталоги себе и запускайте без sudo (docker умеет работать без него,
   если вы в группе `docker`):
   ```sh
@@ -198,4 +198,4 @@ sudo ~/privy-client/install.sh   # install.sh идемпотентен, прос
   чтобы случайно не получить merge-коммит. Если pull упал, разберите локальные изменения
   руками и повторите команду.
 - **Старый docker** — скрипт сам использует `docker-compose`, если плагина `docker compose` нет.
-- **Поменялось имя папки/репозитория** — достаточно поправить `/etc/privy-client.conf`.
+- **Поменялось имя папки/репозитория** — достаточно поправить `/etc/privy-cli.conf`.

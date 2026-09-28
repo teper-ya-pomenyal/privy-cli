@@ -1,8 +1,8 @@
-# Экспериментально: sudo snap install --dangerous ./privy-client_*.snap
+# Экспериментально: sudo snap install --dangerous ./privy-cli_*.snap
 # Для публикации в Snap Store: snapcraft upload.
 # confinement classic — скрипту нужны docker, /opt, systemctl,
 # строгая клетка (strict) ему не подходит.
-name: privy-client
+name: privy-cli
 base: core24
 version: "1.0.0"
 summary: управление стеком Privy Stream одной командой
@@ -15,14 +15,14 @@ confinement: classic
 grade: stable
 
 apps:
-  privy-client:
-    command: privy-client
+  privy-cli:
+    command: privy-cli
 
 parts:
   cli:
     plugin: dump
     source: .
     stage:
-      - privy-client
+      - privy-cli
     stage-packages:
       - git

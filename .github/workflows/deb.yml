@@ -21,9 +21,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: deb
-          path: privy-client_*_all.deb
+          path: privy-cli_*_all.deb
       - name: приложить к release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: privy-client_*_all.deb
+          files: privy-cli_*_all.deb
