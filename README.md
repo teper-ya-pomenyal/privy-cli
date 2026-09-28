@@ -16,6 +16,8 @@ sudo privy-cli logs backend      # журналы docker compose (можно с 
 
 Без указания приложения команда применяется ко всем трём.
 
+> **С нуля до рабочего стека на чистом сервере** — пошагово в [DEPLOY.md](DEPLOY.md).
+
 ## Требования
 
 - Linux с docker и плагином `docker compose` (подойдёт и старый `docker-compose`);
