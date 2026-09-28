@@ -3,8 +3,10 @@
 Bash-скрипт, который после установки на сервер позволяет из любой папки делать:
 
 ```sh
-sudo privy-client update            # обновить все три приложения: git pull + пересборка + перезапуск
+sudo privy-client install           # поставить всё с GitHub: клон + .env + сборка + запуск
+sudo privy-client update            # обновить всё: git pull + пересборка + перезапуск
 sudo privy-client update backend    # только одно приложение (backend | client | admin | all)
+sudo privy-client uninstall admin   # снять приложение
 sudo privy-client start             # запустить всё
 sudo privy-client stop              # остановить всё
 sudo privy-client restart           # перезапустить всё
@@ -17,27 +19,75 @@ sudo privy-client logs backend      # журналы docker compose (можно 
 ## Требования
 
 - Linux с docker и плагином `docker compose` (подойдёт и старый `docker-compose`);
-- git (репозитории обновляются `git pull --ff-only`);
+- git (репозитории клонируются и обновляются им);
 - для админки — node/npm. Если node стоит через nvm, скрипт сам найдёт его
   даже под sudo, у которого урезанный PATH.
 
 ## Установка
 
-Скрипт по умолчанию ждёт стандартную раскладку — все репозитории стека
-в `/opt/privy-stream`:
+### Автоматом, силами самого cli
+
+Сначала сам cli, если ещё не стоит:
+
+```sh
+git clone https://github.com/teper-ya-pomenyal/privy-client.git
+sudo ./privy-client/install.sh
+```
+
+Затем приложения — каждое клонируется с GitHub в `/opt/privy-stream`,
+собирается и запускается:
+
+```sh
+sudo privy-client install backend   # клон + .env со случайными паролями + compose up, gateway на :8080
+sudo privy-client install admin     # клон + npm build + контейнер privy-admin на :8082
+sudo PRIVY_NODE_URL=https://адрес-узла privy-client install client   # веб-версия на :8081
+```
+
+или всё сразу (`install all`) — клиент остановится с подсказкой, если адрес узла не передан:
+
+```sh
+sudo privy-client install all
+```
+
+Что делает `install` для каждого приложения:
+
+- **backend** — клонирует репозиторий, из `.env.example` создаёт `.env`, генерируя
+  случайные `POSTGRES_PASSWORD` и `USER_CACHE_PASSWORD`, и поднимает `docker compose`
+  (миграции прогоняются сами — это сервисы compose). Домен веб-клиента потом
+  впишите в `CORS_ALLOWED_ORIGINS` в `/opt/privy-stream/privy_stream/.env`.
+- **client** — клонирует репозиторий, создаёт `.env` веб-версии с переданным
+  `PRIVY_NODE_URL` (без него установка останавливается с подсказкой — веб-версии
+  нужно знать адрес узла), поднимает `docker compose`.
+- **admin** — клонирует репозиторий, собирает `dist/` через npm и создаёт контейнер
+  `privy-admin`: nginx:alpine, порт `ADMIN_PORT` (8082), конфиг с `try_files` для SPA
+  лежит рядом в `privy-admin.nginx.conf`. Если контейнер уже существует — просто рестарт.
+
+Повторный `install` на уже установленном приложении безвреден: он сообщает, что всё
+стоит, и напоминает про `update`. Упавшая установка откатывает клон — исправьте
+причину и запустите снова.
+
+### Или руками
+
+Если раскладку хотите свою, репозитории можно разложить самому — остальные
+команды (update/start/stop/…) работают по тем же правилам:
 
 ```sh
 sudo mkdir -p /opt/privy-stream && cd /opt/privy-stream
 sudo git clone https://github.com/teper-ya-pomenyal/privy_stream.git
 sudo git clone https://github.com/teper-ya-pomenyal/privy_stream_client.git
 sudo git clone https://github.com/teper-ya-pomenyal/privy_stream_admin.git
-
-git clone https://github.com/teper-ya-pomenyal/privy-client.git
-sudo ./privy-client/install.sh
 ```
 
-`install.sh` просто копирует скрипт в `/usr/local/bin` с правами на запуск —
-после этого команда доступна из любой папки.
+## Удаление
+
+```sh
+sudo privy-client uninstall backend   # или client | admin | all
+```
+
+`uninstall` гасит и удаляет контейнеры приложения и удаляет его каталог
+из `/opt/privy-stream`. Данные backend (postgres, треки) при этом **остаются**
+в томах `privy_stream_*` — команда их полного удаления печатается после выполнения.
+Повторный `install` ставит приложение заново с нуля.
 
 ## Пути по умолчанию
 
@@ -59,6 +109,11 @@ BACKEND_DIR=/opt/privy-stream/privy_stream
 CLIENT_DIR=/opt/privy-stream/privy_stream_client/privy-stream
 ADMIN_DIR=/opt/privy-stream/privy_stream_admin
 ADMIN_CONTAINER=privy-admin
+ADMIN_PORT=8082
+
+# откуда install клонирует репозитории (для форка достаточно GITHUB_ORG)
+#GITHUB_ORG=teper-ya-pomenyal
+#BACKEND_REPO=https://github.com/teper-ya-pomenyal/privy_stream.git
 
 # необязательно: команда после сборки админки без контейнера
 #ADMIN_AFTER_BUILD_CMD=systemctl reload nginx
@@ -72,7 +127,7 @@ EOF
 
 | Приложение | Действия |
 |---|---|
-| `backend` | `git pull --ff-only`, затем `docker compose up -d --build` — пересобирает и поднимает все сервисы, миграции прогоняются сами (это сервисы compose), старые образы подчищаются |
+| `backend` | `git pull --ff-only`, затем `docker compose up -d --build` — пересобирает и поднимает все сервисы, старые образы подчищаются |
 | `client` | `git pull --ff-only`, затем `docker compose up -d --build` (nginx + статика) |
 | `admin` | `git pull --ff-only`, затем `npm ci && npm run build` |
 

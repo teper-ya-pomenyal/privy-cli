@@ -3,7 +3,9 @@
 # privy-client — одна команда для управления всеми приложениями Privy Stream на сервере.
 #
 # Использование:
+#   privy-client install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
 #   privy-client update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+#   privy-client uninstall [backend|client|admin|all]    снять: контейнеры down + каталог репозитория
 #   privy-client start   [backend|client|admin|all]      запустить
 #   privy-client stop    [backend|client|admin|all]      остановить
 #   privy-client restart [backend|client|admin|all]      перезапустить
@@ -30,6 +32,15 @@ ADMIN_CONTAINER="${ADMIN_CONTAINER:-privy-admin}"
 # Необязательно: команда после сборки админки без контейнера (например: systemctl reload nginx)
 ADMIN_AFTER_BUILD_CMD="${ADMIN_AFTER_BUILD_CMD:-}"
 
+# Откуда install клонирует приложения
+GITHUB_ORG="${GITHUB_ORG:-teper-ya-pomenyal}"
+BACKEND_REPO="${BACKEND_REPO:-https://github.com/$GITHUB_ORG/privy_stream.git}"
+CLIENT_REPO="${CLIENT_REPO:-https://github.com/$GITHUB_ORG/privy_stream_client.git}"
+ADMIN_REPO="${ADMIN_REPO:-https://github.com/$GITHUB_ORG/privy_stream_admin.git}"
+
+# Порт контейнера админки на хосте (контейнер создаётся командой install admin)
+ADMIN_PORT="${ADMIN_PORT:-8082}"
+
 if [ -r /etc/privy-client.conf ]; then
   # shellcheck disable=SC1091
   . /etc/privy-client.conf
@@ -52,6 +63,14 @@ dir_of() {
     backend) printf '%s' "$BACKEND_DIR" ;;
     client)  printf '%s' "$CLIENT_DIR" ;;
     admin)   printf '%s' "$ADMIN_DIR" ;;
+  esac
+}
+
+repo_of() {
+  case "$1" in
+    backend) printf '%s' "$BACKEND_REPO" ;;
+    client)  printf '%s' "$CLIENT_REPO" ;;
+    admin)   printf '%s' "$ADMIN_REPO" ;;
   esac
 }
 
@@ -194,13 +213,151 @@ run_status() {
   fi
 }
 
+# --- install / uninstall; аргументы те же: <каталог> <имя приложения>
+
+# Случайный пароль для автогенерируемых .env
+gen_password() {
+  openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+is_installed() {
+  [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
+}
+
+run_install() {
+  local dir="$1" name="$2"
+  if is_installed "$dir"; then
+    say "$name уже установлен в $dir — обновление: privy-client update $name"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dir")"
+  say "$name: git clone $(repo_of "$name")"
+  git clone "$(repo_of "$name")" "$dir" || return 1
+  case "$name" in
+    backend) install_backend_extras "$dir" ;;
+    client)  install_client_extras "$dir" ;;
+    admin)   install_admin_extras "$dir" ;;
+  esac || {
+    warn "$name: установка не завершилась, откатываю клон $dir"
+    rm -rf "$dir"
+    return 1
+  }
+}
+
+install_backend_extras() {
+  local dir="$1"
+  if [ ! -f "$dir/.env" ]; then
+    say "backend: создаю .env из .env.example (пароли генерируются случайно)"
+    if [ -f "$dir/.env.example" ]; then
+      cp "$dir/.env.example" "$dir/.env"
+    else
+      printf 'POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=%s\nPOSTGRES_DB_USERS=users_db\nUSER_CACHE_PASSWORD=%s\nCORS_ALLOWED_ORIGINS=http://localhost:8081,http://localhost:1420\n' \
+        "$(gen_password)" "$(gen_password)" > "$dir/.env"
+    fi
+    sed -i.bak "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(gen_password)/" "$dir/.env" && rm -f "$dir/.env.bak"
+    sed -i.bak "s/^USER_CACHE_PASSWORD=.*/USER_CACHE_PASSWORD=$(gen_password)/" "$dir/.env" && rm -f "$dir/.env.bak"
+    warn "Позже впишите домен веб-клиента в CORS_ALLOWED_ORIGINS ($dir/.env)"
+  fi
+  say "backend: docker compose up -d --build"
+  compose "$dir" up -d --build || return 1
+  docker image prune -f >/dev/null 2>&1 || true
+  say "backend: gateway слушает :8080"
+}
+
+install_client_extras() {
+  local dir="$1" web="$dir/privy-stream" fresh=0
+  if [ ! -f "$web/.env" ]; then
+    fresh=1
+    say "client: создаю .env из .env.example"
+    cp "$web/.env.example" "$web/.env"
+    if [ -n "${PRIVY_NODE_URL:-}" ]; then
+      sed -i.bak "s|^PRIVY_NODE_URL=.*|PRIVY_NODE_URL=$PRIVY_NODE_URL|" "$web/.env" && rm -f "$web/.env.bak"
+    fi
+  fi
+  # если .env сгенерирован только что и узел не передан — останавливаемся до compose:
+  # плейсхолдер из примера выглядит как адрес, но живым узлом не является
+  if [ "$fresh" -eq 1 ] && [ -z "${PRIVY_NODE_URL:-}" ]; then
+    warn "client: веб-версии нужен адрес узла. Повторите установку с ним:"
+    warn "  sudo PRIVY_NODE_URL=https://ваш-узел privy-client install client"
+    return 1
+  fi
+  say "client: docker compose up -d --build"
+  compose "$web" up -d --build || return 1
+  docker image prune -f >/dev/null 2>&1 || true
+  say "client: веб-версия слушает :8081 (или PRIVY_WEB_PORT из $web/.env)"
+}
+
+install_admin_extras() {
+  local dir="$1" conf="$dir/privy-admin.nginx.conf"
+  say "admin: npm ci && npm run build"
+  if ! find_npm; then
+    warn "admin: npm не найден — под sudo не видно ноду из nvm."
+    warn "Поставьте node системно (apt install nodejs npm) или добавьте PATH в /etc/privy-client.conf"
+    return 1
+  fi
+  ( cd "$dir" && npm ci && npm run build ) || return 1
+
+  if admin_container_exists; then
+    say "admin: контейнер $ADMIN_CONTAINER уже существует — рестарт"
+    docker restart "$ADMIN_CONTAINER" >/dev/null
+    return 0
+  fi
+
+  say "admin: создаю контейнер $ADMIN_CONTAINER (nginx:alpine, порт $ADMIN_PORT)"
+  cat > "$conf" <<'NGINX'
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+    index index.html;
+    location / {
+        try_files $uri /index.html;
+    }
+}
+NGINX
+  docker run -d --name "$ADMIN_CONTAINER" \
+    --restart unless-stopped \
+    -p "$ADMIN_PORT:80" \
+    -v "$conf":/etc/nginx/conf.d/default.conf:ro \
+    -v "$dir/dist":/usr/share/nginx/html:ro \
+    nginx:alpine || return 1
+  say "admin: http://<адрес сервера>:$ADMIN_PORT"
+}
+
+run_uninstall() {
+  local dir="$1" name="$2" project
+  if [ "$name" = admin ] && admin_container_exists; then
+    say "$name: docker rm -f $ADMIN_CONTAINER"
+    docker rm -f "$ADMIN_CONTAINER" >/dev/null
+  fi
+  if [ -d "$dir" ] && has_compose "$dir"; then
+    say "$name: docker compose down (тома с данными остаются)"
+    compose "$dir" down || return 1
+  elif [ "$name" = backend ] || [ "$name" = client ]; then
+    project="privy_stream"
+    [ "$name" = client ] && project="privy-stream"
+    "${DC[@]}" -p "$project" down >/dev/null 2>&1 || true
+  fi
+  if [ -d "$dir" ]; then
+    say "$name: удаляю $dir"
+    rm -rf "$dir"
+  else
+    say "$name: каталога $dir нет"
+  fi
+  if [ "$name" = backend ]; then
+    say "данные остались в томах privy_stream_*; удалить совсем:"
+    say "  docker volume rm \$(docker volume ls -q | grep '^privy_stream_')"
+  fi
+}
+
 # --- разбор аргументов
 
 usage() {
   cat <<'EOF'
 privy-client — управление приложениями Privy Stream одной командой
 
+  privy-client install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
   privy-client update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+  privy-client uninstall [backend|client|admin|all]    снять: контейнеры down + каталог
   privy-client start   [backend|client|admin|all]      запустить
   privy-client stop    [backend|client|admin|all]      остановить
   privy-client restart [backend|client|admin|all]      перезапустить
@@ -215,7 +372,7 @@ ACTION="${1:-help}"
 
 case "$ACTION" in
   h | help | -h | --help) usage; exit 0 ;;
-  update | start | stop | restart | status | logs) ;;
+  update | install | uninstall | start | stop | restart | status | logs) ;;
   *) usage >&2; die "неизвестная команда: $ACTION" ;;
 esac
 
@@ -233,7 +390,8 @@ fail=0
 for app in $TARGETS; do
   dir="$(dir_of "$app")"
   echo
-  if [ ! -d "$dir" ]; then
+  # install создаёт каталог сам, uninstall умеет чистить и по отсутствующему
+  if [ "$ACTION" != install ] && [ "$ACTION" != uninstall ] && [ ! -d "$dir" ]; then
     warn "[$app] папки $dir нет — поправьте путь в /etc/privy-client.conf"
     fail=1
     continue
