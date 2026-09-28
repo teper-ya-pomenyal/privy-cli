@@ -107,6 +107,14 @@ find_npm() {
 }
 
 git_pull() {
+  if [ -d "$1/.git/objects" ] && [ ! -w "$1/.git/objects" ]; then
+    warn "$1: нет прав на запись в .git/objects — каталог, похоже, принадлежит root"
+    warn "(репозиторий обновлялся с sudo). Выберите один режим:"
+    warn "  либо всегда запускайте privy-client с sudo,"
+    warn "  либо верните каталог себе и запускайте без sudo (docker это умеет):"
+    warn "    sudo chown -R $USER \"$1\""
+    return 1
+  fi
   say "$1: git pull"
   git -C "$1" pull --ff-only || return 1
   git -C "$1" log -1 --format='    сейчас на: %h %s (%ar)' || return 1

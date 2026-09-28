@@ -185,6 +185,14 @@ sudo ~/privy-client/install.sh   # install.sh идемпотентен, прос
   sudo git config --global --add safe.directory /opt/privy-stream/privy_stream_client/privy-stream
   sudo git config --global --add safe.directory /opt/privy-stream/privy_stream_admin
   ```
+- **«insufficient permission for adding an object to repository database»** — репозиторий
+  обновлялся попеременно то с sudo, то без: часть `.git` принадлежит root, часть вам.
+  Выберите один режим: либо всегда запускайте privy-client с sudo, либо один раз
+  верните каталоги себе и запускайте без sudo (docker умеет работать без него,
+  если вы в группе `docker`):
+  ```sh
+  sudo chown -R $USER /opt/privy-stream
+  ```
 - **Локальные правки на сервере мешают `git pull`** — скрипт тянет только fast-forward,
   чтобы случайно не получить merge-коммит. Если pull упал, разберите локальные изменения
   руками и повторите команду.
