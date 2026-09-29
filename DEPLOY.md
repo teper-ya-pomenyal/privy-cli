@@ -32,6 +32,20 @@ docker ps && echo "docker ok"
 npm -v
 ```
 
+### Если на сервере мало памяти (примерно до 2 ГБ)
+
+Сборка бэкенда — четыре Go-сервиса параллельно, и на маленькой VPS её убивает
+OOM-killer: `failed to execute bake: signal: killed`. Добавьте 2 ГБ подкачки
+и повторите установку:
+
+```sh
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
 ## 2. Установка privy-cli
 
 ```sh
