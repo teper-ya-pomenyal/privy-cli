@@ -245,24 +245,29 @@ is_installed() {
 }
 
 run_install() {
-  local dir="$1" name="$2" clone
-  if is_installed "$dir"; then
+  local dir="$1" name="$2" clone incomplete
+  clone="$(clone_dir_of "$name")"
+  incomplete="$clone/.privy-cli-install-incomplete"
+  if [ -f "$incomplete" ]; then
+    say "$name: продолжаю незавершённую установку из $clone"
+  elif is_installed "$dir"; then
     say "$name уже установлен в $dir — обновление: privy-cli update $name"
     return 0
+  else
+    mkdir -p "$(dirname "$clone")"
+    say "$name: git clone $(repo_of "$name") → $clone"
+    git clone "$(repo_of "$name")" "$clone" || return 1
+    touch "$incomplete" || return 1
   fi
-  clone="$(clone_dir_of "$name")"
-  mkdir -p "$(dirname "$clone")"
-  say "$name: git clone $(repo_of "$name") → $clone"
-  git clone "$(repo_of "$name")" "$clone" || return 1
   case "$name" in
     backend) install_backend_extras "$dir" ;;
     client)  install_client_extras "$dir" ;;
     admin)   install_admin_extras "$dir" ;;
   esac || {
-    warn "$name: установка не завершилась, откатываю клон $dir"
-    rm -rf "$dir"
+    warn "$name: установка не завершилась; сохраняю $clone и конфигурацию для повторного install"
     return 1
   }
+  rm -f "$incomplete"
 }
 
 install_backend_extras() {
@@ -286,18 +291,21 @@ install_backend_extras() {
 }
 
 install_client_extras() {
-  local dir="$1" fresh=0
+  local dir="$1" fresh=0 current_url example_url
   if [ ! -f "$dir/.env" ]; then
     fresh=1
     say "client: создаю .env из .env.example"
-    cp "$dir/.env.example" "$dir/.env"
-    if [ -n "${PRIVY_NODE_URL:-}" ]; then
-      sed -i.bak "s|^PRIVY_NODE_URL=.*|PRIVY_NODE_URL=$PRIVY_NODE_URL|" "$dir/.env" && rm -f "$dir/.env.bak"
-    fi
+    cp "$dir/.env.example" "$dir/.env" || return 1
   fi
-  # если .env сгенерирован только что и узел не передан — останавливаемся до compose:
-  # плейсхолдер из примера выглядит как адрес, но живым узлом не является
-  if [ "$fresh" -eq 1 ] && [ -z "${PRIVY_NODE_URL:-}" ]; then
+  if [ -n "${PRIVY_NODE_URL:-}" ]; then
+    sed -i.bak "s|^PRIVY_NODE_URL=.*|PRIVY_NODE_URL=$PRIVY_NODE_URL|" "$dir/.env" || return 1
+    rm -f "$dir/.env.bak"
+  else
+    current_url="$(sed -n 's/^PRIVY_NODE_URL=//p' "$dir/.env" | head -1)"
+    example_url="$(sed -n 's/^PRIVY_NODE_URL=//p' "$dir/.env.example" | head -1)"
+  fi
+  # Новый .env или плейсхолдер из примера — адрес живого узла ещё не задан.
+  if [ -z "${PRIVY_NODE_URL:-}" ] && { [ "$fresh" -eq 1 ] || [ -z "$current_url" ] || [ "$current_url" = "$example_url" ]; }; then
     warn "client: веб-версии нужен адрес узла. Повторите установку с ним:"
     warn "  sudo PRIVY_NODE_URL=https://ваш-узел privy-cli install client"
     return 1
