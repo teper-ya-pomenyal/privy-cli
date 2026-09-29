@@ -336,6 +336,9 @@ install_admin_extras() {
   cat > "$conf" <<'NGINX'
 server {
     listen 80;
+    # Треки и обложки уходят в gateway через этот proxy; без лимита nginx режет
+    # тело запроса дефолтным 1m и отдаёт 413 ещё до gateway.
+    client_max_body_size 100m;
     location = / {
         return 302 /admin/;
     }
