@@ -30,6 +30,7 @@ cat > "$tmp/bin/docker" <<'DOCKER'
 set -euo pipefail
 case "$*" in
   'compose version' | "ps -a --format {{.Names}}") ;;
+  'buildx version') exit 1 ;; # legacy-билдер, как на старом docker
   run\ *) printf '%s\n' "$*" > "$FAKE_ROOT/docker-run" ;;
   *) echo "unexpected docker command: $*" >&2; exit 1 ;;
 esac

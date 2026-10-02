@@ -5,6 +5,7 @@
 # Использование:
 #   privy-cli install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
 #   privy-cli update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+#   privy-cli update  cli | self                      обновить сам privy-cli с GitHub
 #   privy-cli uninstall [backend|client|admin|all]    снять: контейнеры down + каталог репозитория
 #   privy-cli start   [backend|client|admin|all]      запустить
 #   privy-cli stop    [backend|client|admin|all]      остановить
@@ -23,7 +24,7 @@
 set -euo pipefail
 
 # Версия; build-deb.sh читает её отсюда же для .deb-пакета
-PC_VERSION=1.2.0
+PC_VERSION=1.4.0
 
 BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy-server}"
 CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy-stream}"
@@ -41,6 +42,9 @@ BACKEND_REPO="${BACKEND_REPO:-https://github.com/$GITHUB_ORG/privy-server.git}"
 CLIENT_REPO="${CLIENT_REPO:-https://github.com/$GITHUB_ORG/privy-stream.git}"
 ADMIN_REPO="${ADMIN_REPO:-https://github.com/$GITHUB_ORG/privy-admin.git}"
 
+# Откуда update cli/update self качает свежий privy-cli
+CLI_REPO="${CLI_REPO:-https://github.com/$GITHUB_ORG/privy-cli.git}"
+
 # Порт контейнера админки на хосте (контейнер создаётся командой install admin)
 ADMIN_PORT="${ADMIN_PORT:-8082}"
 
@@ -55,6 +59,30 @@ if docker compose version >/dev/null 2>&1; then
 else
   DC=(docker-compose)
 fi
+
+# Сборку ведём через BuildKit, когда он доступен: его кэш хранится отдельно
+# от образов и переживает чистки, а шаги Dockerfile идут параллельно.
+# На старом docker без buildx остаётся legacy-билдер, у которого промежуточные
+# слои — сами dangling-образы, то есть «мусор после сборки» там = кэш сборки.
+BUILDKIT=0
+if docker buildx version >/dev/null 2>&1; then
+  BUILDKIT=1
+  export DOCKER_BUILDKIT=1
+fi
+
+# Чистка мусора после сборки, не убивающая кэш пересборки:
+#   BuildKit — dangling-образы целиком и слои билдера старше недели
+#             (живой кэш лежит в состоянии билдера, prune его не трогает);
+#   legacy   — только dangling-образы старше 48 часов: свежие промежуточные
+#             слои (возраст ~0) остаются жить как кэш следующей сборки.
+cleanup_build_junk() {
+  if [ "$BUILDKIT" -eq 1 ]; then
+    docker image prune -f >/dev/null 2>&1 || true
+    docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+  else
+    docker image prune -f --filter until=48h >/dev/null 2>&1 || true
+  fi
+}
 
 C_G=$'\e[32m' C_Y=$'\e[33m' C_R=$'\e[31m' C_B=$'\e[1m' C_0=$'\e[0m'
 say()  { printf '%s==> %s%s\n' "$C_G" "$*" "$C_0"; }
@@ -129,6 +157,80 @@ git_pull() {
   git -C "$1" log -1 --format='    сейчас на: %h %s (%ar)' || return 1
 }
 
+# Версия из файла privy-cli (тот же разбор, что в build-deb.sh)
+version_of() {
+  sed -n 's/^PC_VERSION=\([^ #]*\).*/\1/p' "$1" | head -1
+}
+
+# update cli / update self — обновляет сам privy-cli.
+# Запущен из git-клона — обычный git pull этого клона; установленная копия
+# (/usr/local/bin, /usr/bin) — свежий файл скачивается с GitHub (CLI_REPO) и
+# подменяется через mv: перезапись работающего скрипта на месте ломает bash,
+# который дочитывает файл по ходу выполнения, а rename — безопасен.
+self_update() {
+  local src="${BASH_SOURCE[0]}" dir link tmp new new_ver i=0
+  case "$src" in
+    */*) ;;
+    # запущен как «privy-cli» из PATH; файл в текущей папке считаем своим
+    *) [ -f "$src" ] || src="$(command -v "$src" 2>/dev/null || true)" ;;
+  esac
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    warn "privy-cli: не могу определить, где лежит запущенный скрипт"
+    return 1
+  fi
+  dir="$(cd "$(dirname "$src")" && pwd -P)"
+  src="$dir/$(basename "$src")"
+  while [ -L "$src" ] && [ "$i" -lt 10 ]; do # симлинк вроде /usr/local/bin → клон
+    link="$(readlink "$src")"
+    case "$link" in
+      /*) src="$link" ;;
+      *) src="$(dirname "$src")/$link" ;;
+    esac
+    i=$((i + 1))
+  done
+  dir="$(dirname "$src")"
+
+  say "privy-cli: обновляю сам cli (сейчас $PC_VERSION)"
+  if [ -d "$dir/.git" ]; then
+    git_pull "$dir" || return 1
+    new_ver="$(version_of "$src")"
+    if [ "$new_ver" = "$PC_VERSION" ]; then
+      say "privy-cli уже последней версии ($PC_VERSION)"
+    else
+      say "privy-cli обновлён: $PC_VERSION → $new_ver (следующий вызов будет уже новой версией)"
+    fi
+    return 0
+  fi
+
+  tmp="$(mktemp -d)" || return 1
+  say "privy-cli: git clone $CLI_REPO"
+  if ! git clone --depth 1 "$CLI_REPO" "$tmp/privy-cli"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  new="$tmp/privy-cli/privy-cli"
+  if [ ! -f "$new" ]; then
+    warn "privy-cli: в $CLI_REPO нет файла privy-cli"
+    rm -rf "$tmp"
+    return 1
+  fi
+  new_ver="$(version_of "$new")"
+  if [ "$new_ver" = "$PC_VERSION" ]; then
+    say "privy-cli уже последней версии ($PC_VERSION)"
+    rm -rf "$tmp"
+    return 0
+  fi
+  if ! { cp "$new" "$dir/.privy-cli.new.$$" && chmod 755 "$dir/.privy-cli.new.$$" \
+      && mv -f "$dir/.privy-cli.new.$$" "$src"; }; then
+    rm -f "$dir/.privy-cli.new.$$"
+    warn "privy-cli: нет прав заменить $src — повторите с sudo"
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$tmp"
+  say "privy-cli обновлён: $PC_VERSION → $new_ver (следующий вызов будет уже новой версией)"
+}
+
 # --- действия; аргументы у всех: <каталог> <имя приложения> [хвост…]
 # Вызываются из `if ! run_…`, поэтому set -e внутри них не работает:
 # падающие команды ловим явно через || return 1.
@@ -139,7 +241,7 @@ run_update() {
   if has_compose "$dir"; then
     say "$name: docker compose up -d --build"
     compose "$dir" up -d --build || return 1
-    docker image prune -f >/dev/null 2>&1 || true # мусор от предыдущих сборок
+    cleanup_build_junk
     return 0
   fi
   say "$name: npm ci && npm run build"
@@ -286,7 +388,7 @@ install_backend_extras() {
   fi
   say "backend: docker compose up -d --build"
   compose "$dir" up -d --build || return 1
-  docker image prune -f >/dev/null 2>&1 || true
+  cleanup_build_junk
   say "backend: gateway слушает :8080"
 }
 
@@ -312,7 +414,7 @@ install_client_extras() {
   fi
   say "client: docker compose up -d --build"
   compose "$dir" up -d --build || return 1
-  docker image prune -f >/dev/null 2>&1 || true
+  cleanup_build_junk
   say "client: веб-версия слушает :8081 (или PRIVY_WEB_PORT из $dir/.env)"
 }
 
@@ -402,6 +504,7 @@ privy-cli — управление приложениями Privy Stream одн�
 
   privy-cli install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
   privy-cli update  [backend|client|admin|all]      git pull + пересборка + перезапуск
+  privy-cli update  cli | self                      обновить сам privy-cli с GitHub
   privy-cli uninstall [backend|client|admin|all]    снять: контейнеры down + каталог
   privy-cli start   [backend|client|admin|all]      запустить
   privy-cli stop    [backend|client|admin|all]      остановить
@@ -427,7 +530,12 @@ TARGET="${2:-all}"
 case "$TARGET" in
   all) TARGETS="backend client admin" ;;
   backend | client | admin) TARGETS="$TARGET" ;;
-  *) die "неизвестное приложение: $TARGET (доступны: backend, client, admin, all)" ;;
+  cli | self)
+    [ "$ACTION" = update ] || die "сам cli обновляется только командой: privy-cli update cli"
+    self_update
+    exit $?
+    ;;
+  *) die "неизвестное приложение: $TARGET (доступны: backend, client, admin, all; cli|self — в update)" ;;
 esac
 
 extra=()

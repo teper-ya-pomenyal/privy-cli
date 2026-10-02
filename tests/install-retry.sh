@@ -36,7 +36,9 @@ case "$*" in
       exit 1
     fi
     exit 0 ;;
-  'image prune -f') exit 0 ;;
+  'image prune -f --filter until=48h') exit 0 ;;
+  # buildx нет — legacy-билдер: как на старом docker без BuildKit
+  'buildx version') exit 1 ;;
 esac
 echo "unexpected docker command: $*" >&2
 exit 91

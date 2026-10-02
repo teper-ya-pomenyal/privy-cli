@@ -6,6 +6,7 @@ Bash-скрипт, который после установки на серве�
 sudo privy-cli install           # поставить всё с GitHub: клон + .env + сборка + запуск
 sudo privy-cli update            # обновить всё: git pull + пересборка + перезапуск
 sudo privy-cli update backend    # только одно приложение (backend | client | admin | all)
+sudo privy-cli update cli        # обновить сам privy-cli (self — синоним)
 sudo privy-cli uninstall admin   # снять приложение
 sudo privy-cli start             # запустить всё
 sudo privy-cli stop              # остановить всё
@@ -142,6 +143,9 @@ ADMIN_PORT=8082
 #GITHUB_ORG=teper-ya-pomenyal
 #BACKEND_REPO=https://github.com/teper-ya-pomenyal/privy-server.git
 
+# откуда update cli качает сам privy-cli
+#CLI_REPO=https://github.com/teper-ya-pomenyal/privy-cli.git
+
 # необязательно: команда после сборки админки без контейнера
 #ADMIN_AFTER_BUILD_CMD=systemctl reload nginx
 
@@ -172,12 +176,22 @@ EOF
 ## Обновление самого cli
 
 ```sh
-git -C ~/privy-cli pull
-sudo ~/privy-cli/install.sh   # install.sh идемпотентен, просто перезапишите бинарник
+sudo privy-cli update cli        # self — синоним
 ```
 
-Если ставили `.deb`-пакетом — обновляйте пакетом: скачайте/соберите новый `.deb`
-и `sudo apt install ./privy-cli_*_all.deb` поверх старого.
+Скрипт смотрит, откуда запущен:
+
+- **git-клон** (например, `~/privy-cli`) — обычный `git pull --ff-only` этого клона;
+- **установленная копия** (`/usr/local/bin/privy-cli` после `install.sh`
+  или `/usr/bin/privy-cli` из `.deb`) — свежая версия скачивается с GitHub
+  (`CLI_REPO`, по умолчанию тот же репозиторий; переопределяется в
+  `/etc/privy-cli.conf`) и подменяет файл, если версия там новее. Работающая
+  копия при подмене не ломается — новый код подхватится со следующего вызова.
+
+Если версия и так последняя, ничего не меняется. Нет прав на запись — повторите
+с sudo. Ручные способы тоже работают: `git -C ~/privy-cli pull` +
+`sudo ~/privy-cli/install.sh`, а при установке `.deb`-пакетом — новый `.deb`
+поверх старого (`sudo apt install ./privy-cli_*_all.deb`).
 
 ## Если что-то не так
 
