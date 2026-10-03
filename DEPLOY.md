@@ -156,6 +156,18 @@ sudo privy-cli uninstall all      # снять всё (данные postgres/т�
 - **Сам privy-cli**: новый `.deb` из [релизов](https://github.com/teper-ya-pomenyal/privy-cli/releases)
   → `sudo apt install ./privy-cli_X.Y.Z_all.deb` (конфиг `/etc/privy-cli.conf` не трогается).
 
+Если обновление сломало прод — откат одной командой:
+
+```sh
+sudo privy-cli rollback            # все приложения к версиям до последнего update
+sudo privy-cli rollback backend    # или одно приложение
+sudo privy-cli rollback cli        # или сам privy-cli
+```
+
+`update` запоминает коммит, на котором всё работало; `rollback` возвращает его,
+пересобирает и поднимает. Следующий `update` снова вытянет свежее. Подробности —
+в README, раздел «Откат».
+
 ## Где что лежит
 
 - Приложения: `/opt/privy-stream/{privy-server, privy-stream, privy-admin}`

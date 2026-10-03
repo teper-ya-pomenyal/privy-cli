@@ -32,7 +32,7 @@ Recommends: docker.io | docker-ce, nodejs | npm
 Homepage: https://github.com/teper-ya-pomenyal/privy-cli
 Maintainer: Pomenyal <petr.lovlinka@gmail.com>
 Description: одна команда для управления стеком Privy Stream на сервере
- install/update/uninstall/start/stop/restart/status/logs для бэкенда,
+ install/update/rollback/uninstall/start/stop/restart/status/logs для бэкенда,
  веб-клиента и админки; приложения ставятся из GitHub в /opt/privy-stream.
 EOF
 

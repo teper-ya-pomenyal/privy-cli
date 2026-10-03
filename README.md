@@ -7,6 +7,9 @@ sudo privy-cli install           # поставить всё с GitHub: клон
 sudo privy-cli update            # обновить всё: git pull + пересборка + перезапуск
 sudo privy-cli update backend    # только одно приложение (backend | client | admin | all)
 sudo privy-cli update cli        # обновить сам privy-cli (self — синоним)
+sudo privy-cli rollback          # откатить всё к версиям до последнего update
+sudo privy-cli rollback backend  # откатить одно приложение (можно и до конкретного коммита)
+sudo privy-cli rollback cli      # откатить сам privy-cli (self — синоним)
 sudo privy-cli uninstall admin   # снять приложение
 sudo privy-cli start             # запустить всё
 sudo privy-cli stop              # остановить всё
@@ -162,6 +165,9 @@ EOF
 | `client` | `git pull --ff-only`, затем `docker compose up -d --build` (nginx + статика) |
 | `admin` | `git pull --ff-only`, затем `npm ci && npm run build` |
 
+Перед каждым обновлением, сдвинувшим коммит, запоминается точка отката —
+коммит, на котором всё работало до `update` (см. [Откат](#откат)).
+
 Для админки скрипт сам определяет режим по тому, что есть на сервере:
 
 - есть `docker-compose.yml` в папке — управление через compose;
@@ -187,11 +193,48 @@ sudo privy-cli update cli        # self — синоним
   (`CLI_REPO`, по умолчанию тот же репозиторий; переопределяется в
   `/etc/privy-cli.conf`) и подменяет файл, если версия там новее. Работающая
   копия при подмене не ломается — новый код подхватится со следующего вызова.
+  Прежняя версия сохраняется рядом (`.privy-cli.prev`) — из неё работает
+  `rollback cli`.
 
 Если версия и так последняя, ничего не меняется. Нет прав на запись — повторите
 с sudo. Ручные способы тоже работают: `git -C ~/privy-cli pull` +
 `sudo ~/privy-cli/install.sh`, а при установке `.deb`-пакетом — новый `.deb`
 поверх старого (`sudo apt install ./privy-cli_*_all.deb`).
+
+## Откат
+
+Обновление прошло криво — верните прежнюю рабочую версию одной командой:
+
+```sh
+sudo privy-cli rollback            # все приложения к версиям до последнего update
+sudo privy-cli rollback backend    # одно приложение (backend | client | admin | all)
+sudo privy-cli rollback backend v1.2.0   # к конкретному коммиту, тегу или ветке
+sudo privy-cli rollback cli        # сам privy-cli (self — синоним)
+```
+
+Как это устроено:
+
+- **Точка отката.** Каждый `update`, сдвинувший коммит, перед обновлением
+  запоминает, на каком коммите всё работало. Запись лежит внутри `.git`
+  репозитория приложения (`privy-cli-rollback`), поэтому не видна в `git status`
+  и стирается вместе с каталогом при `uninstall`. Холостой `update` (новых
+  коммитов нет) точку не затирает. Текущая точка видна в `privy-cli status`.
+- **`rollback <app>`** делает checkout записанного коммита и пересобирает
+  приложение тем же путём, что и `update` (`docker compose up -d --build` или
+  `npm ci && npm run build` + рестарт контейнера админки). Данные (тома postgres
+  и т.п.) не трогаются. Повторный `rollback` без update между ними — безвреден:
+  «откат уже выполнен».
+- **Возврат на рельсы.** После отката HEAD репозитория отсоединён. Следующий
+  `update <app>` сам вернётся на записанную ветку и обновится обычным
+  fast-forward — ветка никогда не расходится с origin. То есть откат и повторный
+  update можно чередовать сколько угодно.
+- **`rollback cli`.** Для git-клона cli — тот же механизм (checkout точки
+  отката). Для установленной копии (`/usr/local/bin`, `/usr/bin`) `update cli`
+  сохраняет прежнюю версию в `.privy-cli.prev` рядом, а rollback меняет файлы
+  местами: повторный rollback возвращает обновлённую версию обратно.
+
+Откатить можно и вручную: `git -C /opt/privy-stream/privy-server checkout <коммит>`
+и повторный `update` — CLI ничего не блокирует.
 
 ## Если что-то не так
 

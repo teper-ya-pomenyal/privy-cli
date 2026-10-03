@@ -5,7 +5,9 @@
 # Использование:
 #   privy-cli install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
 #   privy-cli update  [backend|client|admin|all]      git pull + пересборка + перезапуск
-#   privy-cli update  cli | self                      обновить сам privy-cli с GitHub
+#   privy-cli rollback [backend|client|admin|all]     откат к версии до последнего update
+#   privy-cli rollback <app> <коммит|тег>             откат к указанной версии
+#   privy-cli update | rollback cli | self            обновить / откатить сам privy-cli
 #   privy-cli uninstall [backend|client|admin|all]    снять: контейнеры down + каталог репозитория
 #   privy-cli start   [backend|client|admin|all]      запустить
 #   privy-cli stop    [backend|client|admin|all]      остановить
@@ -24,7 +26,7 @@
 set -euo pipefail
 
 # Версия; build-deb.sh читает её отсюда же для .deb-пакета
-PC_VERSION=1.4.0
+PC_VERSION=1.5.0
 
 BACKEND_DIR="${BACKEND_DIR:-/opt/privy-stream/privy-server}"
 CLIENT_DIR="${CLIENT_DIR:-/opt/privy-stream/privy-stream}"
@@ -152,6 +154,7 @@ git_pull() {
     warn "    sudo chown -R $USER \"$1\""
     return 1
   fi
+  git_reattach_if_detached "$1" || return 1
   say "$1: git pull"
   git -C "$1" pull --ff-only || return 1
   git -C "$1" log -1 --format='    сейчас на: %h %s (%ar)' || return 1
@@ -162,13 +165,49 @@ version_of() {
   sed -n 's/^PC_VERSION=\([^ #]*\).*/\1/p' "$1" | head -1
 }
 
-# update cli / update self — обновляет сам privy-cli.
-# Запущен из git-клона — обычный git pull этого клона; установленная копия
-# (/usr/local/bin, /usr/bin) — свежий файл скачивается с GitHub (CLI_REPO) и
-# подменяется через mv: перезапись работающего скрипта на месте ломает bash,
-# который дочитывает файл по ходу выполнения, а rename — безопасен.
-self_update() {
-  local src="${BASH_SOURCE[0]}" dir link tmp new new_ver i=0
+# --- откат к предыдущей версии -------------------------------------------
+#
+# Перед каждым update запоминаем коммит, на котором всё работало, в файл
+# privy-cli-rollback внутри .git репозитория: там он не виден в git status,
+# не мешает checkout и стирается вместе с каталогом при uninstall.
+# rollback делает checkout записанного коммита (HEAD отсоединяется) и
+# пересобирает приложение; следующий update возвращает ветку и тянет как
+# обычно, так что откат никогда не расходится с origin.
+
+rollback_state_get() { # rollback_state_get <каталог> <ключ> — значение или пусто
+  local gitdir
+  gitdir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  sed -n "s/^$2=//p" "$gitdir/privy-cli-rollback" 2>/dev/null | head -1
+}
+
+record_rollback_point() { # record_rollback_point <каталог> <коммит-до-обновления>
+  local dir="$1" sha="$2" gitdir branch
+  gitdir="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  branch="$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  printf 'commit=%s\nbranch=%s\ntime=%s\n' "$sha" "$branch" "$(date '+%Y-%m-%d %H:%M')" \
+    > "$gitdir/privy-cli-rollback" || return 1
+}
+
+# После отката HEAD отсоединён, git pull на нём невозможен: возвращаемся
+# на записанную в точке отката ветку, дальше pull --ff-only догоняет origin.
+git_reattach_if_detached() {
+  local dir="$1" branch gitdir
+  branch="$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ -n "$branch" ] && return 0
+  gitdir="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  branch="$(sed -n 's/^branch=//p' "$gitdir/privy-cli-rollback" 2>/dev/null | head -1)"
+  if [ -z "$branch" ]; then
+    warn "$dir: HEAD отсоединён (откат), а ветка в точке отката не записана — git pull невозможен"
+    return 1
+  fi
+  say "$dir: возвращаюсь на ветку $branch"
+  git -C "$dir" checkout -q "$branch" -- || return 1
+}
+
+# Где лежит запущенный файл privy-cli (разворачивает симлинки вроде
+# /usr/local/bin → клон). Печатает путь или возвращает 1.
+self_file() {
+  local src="${BASH_SOURCE[0]}" dir link i=0
   case "$src" in
     */*) ;;
     # запущен как «privy-cli» из PATH; файл в текущей папке считаем своим
@@ -188,11 +227,30 @@ self_update() {
     esac
     i=$((i + 1))
   done
+  printf '%s\n' "$src"
+}
+
+# update cli / update self — обновляет сам privy-cli.
+# Запущен из git-клона — обычный git pull этого клона; установленная копия
+# (/usr/local/bin, /usr/bin) — свежий файл скачивается с GitHub (CLI_REPO) и
+# подменяется через mv: перезапись работающего скрипта на месте ломает bash,
+# который дочитывает файл по ходу выполнения, а rename — безопасен.
+# В обоих случаях перед обновлением запоминается прежняя версия, из неё
+# работает rollback cli: в клоне — точка отката в .git, у установленной
+# копии — соседний файл .privy-cli.prev.
+self_update() {
+  local src dir tmp new new_ver before after
+  src="$(self_file)" || return 1
   dir="$(dirname "$src")"
 
   say "privy-cli: обновляю сам cli (сейчас $PC_VERSION)"
   if [ -d "$dir/.git" ]; then
+    before="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
     git_pull "$dir" || return 1
+    after="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "$before" ] && [ "$before" != "$after" ] && ! record_rollback_point "$dir" "$before"; then
+      warn "privy-cli: не удалось записать точку отката — rollback cli будет недоступен"
+    fi
     new_ver="$(version_of "$src")"
     if [ "$new_ver" = "$PC_VERSION" ]; then
       say "privy-cli уже последней версии ($PC_VERSION)"
@@ -220,6 +278,10 @@ self_update() {
     rm -rf "$tmp"
     return 0
   fi
+  # Прежняя версия остаётся рядом — из неё работает rollback cli.
+  if ! cp -p "$src" "$dir/.privy-cli.prev"; then
+    warn "privy-cli: не смог сохранить прежнюю версию рядом — rollback cli будет недоступен"
+  fi
   if ! { cp "$new" "$dir/.privy-cli.new.$$" && chmod 755 "$dir/.privy-cli.new.$$" \
       && mv -f "$dir/.privy-cli.new.$$" "$src"; }; then
     rm -f "$dir/.privy-cli.new.$$"
@@ -231,13 +293,58 @@ self_update() {
   say "privy-cli обновлён: $PC_VERSION → $new_ver (следующий вызов будет уже новой версией)"
 }
 
+# rollback cli / rollback self — вернуть предыдущую версию privy-cli.
+# git-клон — checkout точки отката; установленная копия — обмен с файлом
+# .privy-cli.prev, который оставил update cli. Обмен, а не удаление:
+# повторный rollback возвращает обновлённую версию обратно.
+self_rollback() {
+  local src dir prev prev_ver new_ver
+  src="$(self_file)" || return 1
+  dir="$(dirname "$src")"
+
+  if [ -d "$dir/.git" ]; then
+    local commit
+    commit="$(rollback_state_get "$dir" commit)"
+    if [ -z "$commit" ]; then
+      die "privy-cli: нет точки отката — она появляется после первого «update cli»"
+    fi
+    if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)" = "$commit" ]; then
+      say "privy-cli: откат уже выполнен, версия $PC_VERSION и работает"
+      return 0
+    fi
+    say "privy-cli: откат на $(git -C "$dir" log -1 --format='%h %s' "$commit")"
+    git -C "$dir" checkout -q "$commit" -- || die "privy-cli: checkout не удался"
+    new_ver="$(version_of "$src")"
+    say "privy-cli откачен: $PC_VERSION → $new_ver (следующий вызов будет прежней версией)"
+    return 0
+  fi
+
+  prev="$dir/.privy-cli.prev"
+  if [ ! -f "$prev" ]; then
+    die "privy-cli: сохранённой предыдущей версии нет — она появится после первого «update cli»"
+  fi
+  prev_ver="$(version_of "$prev")"
+  if [ -z "$prev_ver" ]; then
+    die "privy-cli: в $prev нет версии — удалите файл и обновитесь заново («update cli»)"
+  fi
+  say "privy-cli: откат $PC_VERSION → $prev_ver"
+  if ! { mv -f "$prev" "$dir/.privy-cli.prev.swap.$$" \
+      && mv -f "$src" "$prev" \
+      && mv -f "$dir/.privy-cli.prev.swap.$$" "$src"; }; then
+    die "privy-cli: нет прав заменить $src — повторите с sudo"
+  fi
+  say "privy-cli откачен до $prev_ver (повторный «rollback cli» вернёт $PC_VERSION)"
+}
+
 # --- действия; аргументы у всех: <каталог> <имя приложения> [хвост…]
 # Вызываются из `if ! run_…`, поэтому set -e внутри них не работает:
 # падающие команды ловим явно через || return 1.
 
-run_update() {
+# Сборка и запуск — общий хвост update и rollback: compose-приложения
+# пересобираются и поднимаются, админка без compose пересобирается npm
+# и (если контейнер существует) рестартует.
+build_and_start() { # build_and_start <каталог> <имя>
   local dir="$1" name="$2"
-  git_pull "$dir" || return 1
   if has_compose "$dir"; then
     say "$name: docker compose up -d --build"
     compose "$dir" up -d --build || return 1
@@ -259,6 +366,54 @@ run_update() {
     say "$name: $ADMIN_AFTER_BUILD_CMD"
     bash -lc "$ADMIN_AFTER_BUILD_CMD"
   fi
+}
+
+run_update() {
+  local dir="$1" name="$2" before after
+  before="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  git_pull "$dir" || return 1
+  # Точку отката пишем только когда обновление реально сдвинуло HEAD:
+  # холостой update не должен затирать откат к более ранней рабочей версии.
+  after="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$before" ] && [ "$before" != "$after" ] && ! record_rollback_point "$dir" "$before"; then
+    warn "$name: не удалось записать точку отката — rollback будет недоступен"
+  fi
+  build_and_start "$dir" "$name" || return 1
+}
+
+# rollback <app> [коммит|тег] — вернуть предыдущую версию (или указанную)
+# и пересобрать. Без аргумента используется точка отката, записанная
+# последним update.
+run_rollback() { # run_rollback <каталог> <имя> [коммит|тег|ветка]
+  local dir="$1" name="$2" target="${3:-}" commit cur
+  cur="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$target" ]; then
+    commit="$(git -C "$dir" rev-parse --verify --quiet "${target}^{commit}" 2>/dev/null || true)"
+    if [ -z "$commit" ]; then
+      # ${target} в скобках: за $target сразу идёт многобайтовый «»»,
+      # и bash 3.2 на macOS без скобок ищет переменную «target»
+      warn "$name: в репозитории нет версии «${target}» (коммит, тег или ветка)"
+      return 1
+    fi
+  else
+    commit="$(rollback_state_get "$dir" commit)"
+    if [ -z "$commit" ]; then
+      warn "$name: нет записанной предыдущей версии — она появляется после первого update"
+      warn "(можно откатиться и на конкретную версию: privy-cli rollback $name <коммит|тег>)"
+      return 1
+    fi
+  fi
+  if [ "$commit" = "$cur" ]; then
+    say "$name: откат уже выполнен, эта версия и работает ($(git -C "$dir" log -1 --format='%h'))"
+    return 0
+  fi
+  say "$name: откат на $(git -C "$dir" log -1 --format='%h %s' "$commit")"
+  if ! git -C "$dir" checkout -q "$commit" --; then
+    warn "$name: checkout не удался — локальные правки? shallow-клон без истории?"
+    return 1
+  fi
+  git -C "$dir" log -1 --format='    сейчас на: %h %s (%ar)' || return 1
+  build_and_start "$dir" "$name" || return 1
 }
 
 run_start() {
@@ -318,9 +473,21 @@ run_logs() {
 }
 
 run_status() {
-  local dir="$1" name="$2" built
+  local dir="$1" name="$2" built branch point time cur
   printf '%s%s%s  %s\n' "$C_B" "$name" "$C_0" "$dir"
+  branch="$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  cur="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
   git -C "$dir" log -1 --format='  коммит: %h %s (%ar)' 2>/dev/null || warn "  git-истории нет"
+  if [ -z "$branch" ] && [ -n "$cur" ]; then
+    printf '  %sHEAD отсоединён — стоит откат; «update %s» вернёт на ветку%s\n' "$C_Y" "$name" "$C_0"
+  fi
+  point="$(rollback_state_get "$dir" commit)"
+  if [ -n "$point" ] && [ "$point" != "$cur" ]; then
+    time="$(rollback_state_get "$dir" time)"
+    printf '  точка отката: %s (%s) — privy-cli rollback %s\n' \
+      "$(git -C "$dir" log -1 --format='%h %s' "$point" 2>/dev/null || printf '%s' "${point:0:7}")" \
+      "${time:-?}" "$name"
+  fi
   if has_compose "$dir"; then
     compose "$dir" ps -a
   elif [ "$name" = admin ] && admin_container_exists; then
@@ -504,13 +671,15 @@ privy-cli — управление приложениями Privy Stream одн�
 
   privy-cli install  [backend|client|admin|all]     поставить с GitHub: клон + .env + сборка + запуск
   privy-cli update  [backend|client|admin|all]      git pull + пересборка + перезапуск
-  privy-cli update  cli | self                      обновить сам privy-cli с GitHub
+  privy-cli rollback [backend|client|admin|all]     откат к версии до последнего update
+  privy-cli rollback <app> <коммит|тег>             откат к указанной версии
   privy-cli uninstall [backend|client|admin|all]    снять: контейнеры down + каталог
   privy-cli start   [backend|client|admin|all]      запустить
   privy-cli stop    [backend|client|admin|all]      остановить
   privy-cli restart [backend|client|admin|all]      перезапустить
   privy-cli status  [backend|client|admin|all]      коммит и состояние контейнеров
   privy-cli logs    [backend|client|admin] [сервис…]  журналы, Ctrl+C — выход
+  privy-cli update | rollback cli | self            обновить / откатить сам privy-cli
   privy-cli version                                 показать версию
 
 Без указания приложения берётся all. Пути и имя контейнера админки — в /etc/privy-cli.conf.
@@ -522,7 +691,7 @@ ACTION="${1:-help}"
 case "$ACTION" in
   h | help | -h | --help) usage; exit 0 ;;
   v | version | --version) printf 'privy-cli %s\n' "$PC_VERSION"; exit 0 ;;
-  update | install | uninstall | start | stop | restart | status | logs) ;;
+  update | install | uninstall | start | stop | restart | status | logs | rollback) ;;
   *) usage >&2; die "неизвестная команда: $ACTION" ;;
 esac
 
@@ -531,11 +700,14 @@ case "$TARGET" in
   all) TARGETS="backend client admin" ;;
   backend | client | admin) TARGETS="$TARGET" ;;
   cli | self)
-    [ "$ACTION" = update ] || die "сам cli обновляется только командой: privy-cli update cli"
-    self_update
+    case "$ACTION" in
+      update) self_update ;;
+      rollback) self_rollback ;;
+      *) die "сам cli управляется командами: privy-cli update cli | privy-cli rollback cli" ;;
+    esac
     exit $?
     ;;
-  *) die "неизвестное приложение: $TARGET (доступны: backend, client, admin, all; cli|self — в update)" ;;
+  *) die "неизвестное приложение: $TARGET (доступны: backend, client, admin, all; cli|self — в update и rollback)" ;;
 esac
 
 extra=()
